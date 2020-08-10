@@ -199,28 +199,30 @@ typedef uintptr_t BlockByrefDestroyFunction;
 
 
 // Values for Block_layout->flags to describe block objects
+// 作为 Block_layour->flags 的值用于描述 Block 对象
 enum {
     BLOCK_DEALLOCATING =      (0x0001),  // runtime
-    BLOCK_REFCOUNT_MASK =     (0xfffe),  // runtime
-    BLOCK_NEEDS_FREE =        (1 << 24), // runtime
-    BLOCK_HAS_COPY_DISPOSE =  (1 << 25), // compiler
+    BLOCK_REFCOUNT_MASK =     (0xfffe),  // runtime // 用来标识栈 Block // 用来标识Block类型
+    BLOCK_NEEDS_FREE =        (1 << 24), // runtime // 用来标识堆 Block // 用来标识Block类型
+    BLOCK_HAS_COPY_DISPOSE =  (1 << 25), // compiler // 编译器有 copy dispose 助手 // 判断 Block 是否有 copy_dispose 助手 即 description2 中的 copy 和 dispose 函数，用来管理捕获对象的内存
     BLOCK_HAS_CTOR =          (1 << 26), // compiler: helpers have C++ code
     BLOCK_IS_GC =             (1 << 27), // runtime
-    BLOCK_IS_GLOBAL =         (1 << 28), // compiler
+    BLOCK_IS_GLOBAL =         (1 << 28), // compiler // 是否是全局 block // 用来标识Block类型
     BLOCK_USE_STRET =         (1 << 29), // compiler: undefined if !BLOCK_HAS_SIGNATURE
     BLOCK_HAS_SIGNATURE  =    (1 << 30), // compiler
     BLOCK_HAS_EXTENDED_LAYOUT=(1 << 31)  // compiler
 };
 
 #define BLOCK_DESCRIPTOR_1 1
-struct Block_descriptor_1 {
+struct Block_descriptor_1 { // 常规态都有这两个值
     uintptr_t reserved;
     uintptr_t size;
 };
 
 #define BLOCK_DESCRIPTOR_2 1
-struct Block_descriptor_2 {
+struct Block_descriptor_2 { // 当有使用 __block 变量和捕获外部对象的类型的变量等情况下
     // requires BLOCK_HAS_COPY_DISPOSE
+    // 需要 flags 是 BLOCK_HAS_COPY_DISPOSE
     BlockCopyFunction copy;
     BlockDisposeFunction dispose;
 };
@@ -233,16 +235,18 @@ struct Block_descriptor_3 {
 };
 
 struct Block_layout {
-    void *isa;
-    volatile int32_t flags; // contains ref count
-    int32_t reserved;
-    BlockInvokeFunction invoke;
-    struct Block_descriptor_1 *descriptor;
-    // imported variables
+    void *isa; // 指向父类的结构体，就是_NSConcreteStackBlock，_NSConcreteMallocBlock，_NSConcreteGlobalBlock这几个，说明OC本身也是一个对象。
+    volatile int32_t flags; // contains ref count 包含引用计数 // 就是上面那几个枚举，用来保留 block 的一些信息
+    int32_t reserved; // 保留信息
+    BlockInvokeFunction invoke; // 函数指针，指向 block 具体的执行函数
+    struct Block_descriptor_1 *descriptor; // block 附加描述信息，主要保存了内存 size 以及 copy 和 dispose 函数的指针及签名和 layout 等信息，通过源码可发现，layout 中只包含了 Block_descriptor_1，并未包含 Block_descriptor_2 和 Block_descriptor_3，这是因为在捕获不同类型变量或者没用到外部变量时，编译器会改变结构体的结构，按需添加 Block_descriptor_2 和 Block_descriptor_3，所以才需要 BLOCK_HAS_COPY_DISPOSE 和 BLOCK_HAS_SIGNATURE 等枚举来判断
+    // imported variables capture 的外部变量，如果 Block 中使用了外部变量，结构体中就会有相应的信息，下面会解释。Block 将使用的变量或者变量指针 copy 过来，内部才可以访问
 };
 
 
 // Values for Block_byref->flags to describe __block variables
+// 作为 Block_byref->flags 的值用于描述 __block 修饰的变量
+// 结构体 Block_byref，变量在被 __block 修饰时由编译器来生成
 enum {
     // Byref refcount must use the same bits as Block_layout's refcount.
     // BLOCK_DEALLOCATING =      (0x0001),  // runtime

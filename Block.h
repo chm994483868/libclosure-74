@@ -26,27 +26,33 @@ extern "C" {
 #endif
 
 // Create a heap based copy of a Block or simply add a reference to an existing one.
+// 创建基于堆的 block 副本，或仅添加对现有 block 的引用。
+// 使用时必须与 Block_release 配对使用释放内存。
 // This must be paired with Block_release to recover memory, even when running
 // under Objective-C Garbage Collection.
 BLOCK_EXPORT void *_Block_copy(const void *aBlock)
     __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_3_2);
 
 // Lose the reference, and if heap based and last reference, recover the memory
+// 释放引用，如果是堆 Block 且是最后一个引用，释放引用后并恢复内存。
 BLOCK_EXPORT void _Block_release(const void *aBlock)
     __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_3_2);
 
-
 // Used by the compiler. Do not call this function yourself.
+// 由编译器使用，不要自己调用此函数。
 BLOCK_EXPORT void _Block_object_assign(void *, const void *, const int)
     __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_3_2);
 
 // Used by the compiler. Do not call this function yourself.
+// 由编译器使用，不要自己调用此函数。
 BLOCK_EXPORT void _Block_object_dispose(const void *, const int)
     __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_3_2);
 
 // Used by the compiler. Do not use these variables yourself.
+// 由编译器使用，不要自己调用此函数。
 BLOCK_EXPORT void * _NSConcreteGlobalBlock[32]
     __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_3_2);
+
 BLOCK_EXPORT void * _NSConcreteStackBlock[32]
     __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_3_2);
 
@@ -57,8 +63,8 @@ BLOCK_EXPORT void * _NSConcreteStackBlock[32]
 
 // Type correct macros
 
+// _Block_copy 和 _Block_release 的宏定义
 #define Block_copy(...) ((__typeof(__VA_ARGS__))_Block_copy((const void *)(__VA_ARGS__)))
 #define Block_release(...) _Block_release((const void *)(__VA_ARGS__))
-
 
 #endif

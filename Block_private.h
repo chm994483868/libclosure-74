@@ -62,12 +62,19 @@
 #if __has_feature(ptrauth_calls)  &&  __cplusplus >= 201103L
 
 // StorageSignedFunctionPointer<Key, Fn> stores a function pointer of type
-// Fn but signed with the given ptrauth key and with the address of its
-// storage as extra data.
+// Fn but signed with the given ptrauth key and with the
+// address of its storage as extra data.
+
+// StorageSignedFunctionPointer 存储类型为 Fn 的函数指针，
+// 但使用给定的 ptrauth 键对其签名并使用其存储地址作为额外数据。
+
 // Function pointers inside block objects are signed this way.
+// block 对象内部的函数指针以这种方式签名
+
+// 这个模版类涉及的内容太深了，暂时忽略，好像等看 objc4 的时候还会再遇到！
 template <typename Fn, ptrauth_key Key>
 class StorageSignedFunctionPointer {
-    uintptr_t bits;
+    uintptr_t bits; // unsigned long
 
  public:
 
@@ -156,6 +163,7 @@ class StorageSignedFunctionPointer {
     }
 };
 
+// 声明一个模版类名
 using BlockCopyFunction = StorageSignedFunctionPointer
     <void(*)(void *, const void *),
      ptrauth_key_block_function>;
@@ -180,6 +188,7 @@ using BlockByrefDestroyFunction = StorageSignedFunctionPointer
 #elif !__has_feature(ptrauth_calls)
 // not ptrauth_calls
 
+// 这里定义的函数指针和模版同名，不会有问题吗？
 typedef void(*BlockCopyFunction)(void *, const void *);
 typedef void(*BlockDisposeFunction)(const void *);
 typedef void(*BlockInvokeFunction)(void *, ...);
@@ -202,26 +211,31 @@ typedef uintptr_t BlockByrefDestroyFunction;
 // 作为 Block_layour->flags 的值用于描述 Block 对象
 enum {
     BLOCK_DEALLOCATING =      (0x0001),  // runtime
-    BLOCK_REFCOUNT_MASK =     (0xfffe),  // runtime // 用来标识栈 Block // 用来标识Block类型
+    BLOCK_REFCOUNT_MASK =     (0xfffe),  // runtime // 用来标识栈 Block
     
-    BLOCK_NEEDS_FREE =        (1 << 24), // runtime // 用来标识堆 Block // 用来标识Block类型
-    BLOCK_HAS_COPY_DISPOSE =  (1 << 25), // compiler // 编译器有 copy dispose 助手 // 判断 Block 是否有 copy_dispose 助手 即 description2 中的 copy 和 dispose 函数，用来管理捕获对象的内存
+    BLOCK_NEEDS_FREE =        (1 << 24), // runtime // 用来标识堆 Block
+    
+    BLOCK_HAS_COPY_DISPOSE =  (1 << 25), // compiler // 编译器有 copy dispose 助手
+    // 判断 Block 是否有 copy_dispose 助手 即 description2 中的 copy 和 dispose 函数，用来管理捕获对象的内存
+    
     BLOCK_HAS_CTOR =          (1 << 26), // compiler: helpers have C++ code
     BLOCK_IS_GC =             (1 << 27), // runtime
-    BLOCK_IS_GLOBAL =         (1 << 28), // compiler // 是否是全局 block // 用来标识Block类型
+    BLOCK_IS_GLOBAL =         (1 << 28), // compiler // 是否是全局 block
+    
     BLOCK_USE_STRET =         (1 << 29), // compiler: undefined if !BLOCK_HAS_SIGNATURE
+    
     BLOCK_HAS_SIGNATURE  =    (1 << 30), // compiler
     BLOCK_HAS_EXTENDED_LAYOUT=(1 << 31)  // compiler
 };
 
 #define BLOCK_DESCRIPTOR_1 1
-struct Block_descriptor_1 { // 常规态都有这两个值
-    uintptr_t reserved;
-    uintptr_t size;
+struct Block_descriptor_1 { // 常态所有 block 都有这两个值
+    uintptr_t reserved; // 保留字段 unsigned long
+    uintptr_t size; // block 的大小 unsigned long
 };
 
 #define BLOCK_DESCRIPTOR_2 1
-struct Block_descriptor_2 { // 当有使用 __block 变量和捕获外部对象的类型的变量等情况下
+struct Block_descriptor_2 {
     // requires BLOCK_HAS_COPY_DISPOSE
     // 需要 flags 是 BLOCK_HAS_COPY_DISPOSE
     BlockCopyFunction copy;
@@ -231,23 +245,49 @@ struct Block_descriptor_2 { // 当有使用 __block 变量和捕获外部对象�
 #define BLOCK_DESCRIPTOR_3 1
 struct Block_descriptor_3 {
     // requires BLOCK_HAS_SIGNATURE
+    // Block 存在延伸布局 ？
     const char *signature;
     const char *layout;     // contents depend on BLOCK_HAS_EXTENDED_LAYOUT
 };
 
 struct Block_layout {
-    void *isa; // 指向父类的结构体，就是_NSConcreteStackBlock，_NSConcreteMallocBlock，_NSConcreteGlobalBlock这几个，说明OC本身也是一个对象。
-    volatile int32_t flags; // contains ref count 包含引用计数 // 就是上面那几个枚举，用来保留 block 的一些信息
-    int32_t reserved; // 保留信息
-    BlockInvokeFunction invoke; // 函数指针，指向 block 具体的执行函数
-    struct Block_descriptor_1 *descriptor; // block 附加描述信息，主要保存了内存 size 以及 copy 和 dispose 函数的指针及签名和 layout 等信息，通过源码可发现，layout 中只包含了 Block_descriptor_1，并未包含 Block_descriptor_2 和 Block_descriptor_3，这是因为在捕获不同类型变量或者没用到外部变量时，编译器会改变结构体的结构，按需添加 Block_descriptor_2 和 Block_descriptor_3，所以才需要 BLOCK_HAS_COPY_DISPOSE 和 BLOCK_HAS_SIGNATURE 等枚举来判断
-    // imported variables capture 的外部变量，如果 Block 中使用了外部变量，结构体中就会有相应的信息，下面会解释。Block 将使用的变量或者变量指针 copy 过来，内部才可以访问
+    // 指向父类的结构体，
+    // 就是 _NSConcreteStackBlock，
+    // _NSConcreteMallocBlock，
+    // _NSConcreteGlobalBlock 这几个，
+    // 说明 Block 本身也是一个 OC 对象
+    void *isa;
+    
+    // 对应的值就是上面的枚举值，用来保留 block 的一些信息
+    volatile int32_t flags; // contains ref count
+    
+    // block 的保留信息
+    int32_t reserved;
+    
+    // 函数指针，指向 block 要执行的函数（即 block 定义中花括号中的表达式）
+    BlockInvokeFunction invoke;
+    
+    // block 附加描述信息，
+    struct Block_descriptor_1 *descriptor;
+    // 主要保存了内存 size 大小以及 copy 和 dispose 函数的指针及签名和 layout 等信息，
+    // 通过源码可发现，layout 中只包含了 Block_descriptor_1，
+    // 并未包含 Block_descriptor_2 和 Block_descriptor_3，
+    // 这是因为在捕获不同类型变量或者没用到外部变量时，编译器会改变结构体的结构，
+    // 按需添加 Block_descriptor_2 和 Block_descriptor_3，
+    // 所以才需要 BLOCK_HAS_COPY_DISPOSE 和 BLOCK_HAS_SIGNATURE 等枚举来判断
+    
+    // imported variables
+    
+    // capture 的外部变量，
+    // 如果 Block 中使用了外部变量，结构体中就会有相应的信息，
+    // 如果是 __Block 变量则添加对应结构体类型为其成员变量，非 __block 的则直接添加对应类型的成员变量。
+    // Block 将使用的变量或者变量指针 copy 过来，内部才可以访问
 };
 
-
 // Values for Block_byref->flags to describe __block variables
-// 作为 Block_byref->flags 的值用于描述 __block 修饰的变量
-// 结构体 Block_byref，变量在被 __block 修饰时由编译器来生成
+// 作为 Block_byref->flags 的值用于描述 __block 修饰的变量是什么类型
+
+// 结构体 Block_byref 变量在被 __block 修饰时由编译器来生成
 enum {
     // Byref refcount must use the same bits as Block_layout's refcount.
     // Byref refcount 必须使用与 Block_layout 的 refcount 相同的位
@@ -264,16 +304,27 @@ enum {
 
     BLOCK_BYREF_IS_GC =             (  1 << 27), // runtime
 
-    BLOCK_BYREF_HAS_COPY_DISPOSE =  (  1 << 25), // compiler // 表示 byref 含有 copy dispose 函数，在 __block 捕获的对象为对象时就会生成 copy dispose 函数来管理对象内存
+    BLOCK_BYREF_HAS_COPY_DISPOSE =  (  1 << 25), // compiler // 表示 byref 含有 copy dispose 函数，
+    // 在 __block 捕获的变量为对象类型时就会生成 copy dispose 函数来管理对象内存
     BLOCK_BYREF_NEEDS_FREE =        (  1 << 24), // runtime // 判断是否需要释放
 };
 
 // 结构体 Block_byref，变量在被 __block 修饰时由编译器来生成
 struct Block_byref {
-    void *isa; // 指向父类，一般直接指向 0
-    struct Block_byref *forwarding; // block 在栈中时执行自己，Block 执行 copy 后指向堆中的 byref，堆中 Block 指向自己。
-    volatile int32_t flags; // contains ref count 对应上的枚举值
-    uint32_t size; // 所占内存大小
+    // 指向父类，一般直接指向 0
+    void *isa;
+    
+    struct Block_byref *forwarding;
+    // __block 变量在栈中时指向自己，
+    // Block 执行 copy 后，
+    // 栈中 __block 变量的 __forwarding 指向堆中的 byref（__block 变量），
+    // 堆中 __block 变量的 __forwarding 指向自己
+    
+    // 对应上面的枚举值
+    volatile int32_t flags; // contains ref count
+    
+    // __block 变量结构体所占内存大小
+    uint32_t size;
 };
 
 struct Block_byref_2 {
@@ -288,7 +339,6 @@ struct Block_byref_3 {
     // 含有 layout
     const char *layout;
 };
-
 
 // Extended layout encoding.
 // 扩展布局编码
@@ -327,20 +377,22 @@ enum {
 
 // Runtime support functions used by compiler when generating copy/dispose helpers
 // 当编译器生成 copy/dispose helpers 时 Runtime 支持的函数
+
 // Values for _Block_object_assign() and _Block_object_dispose() parameters
 // 作为 _Block_object_assign() 和 _Block_object_dispose() 函数的参数
+
 enum {
     // see function implementation for a more complete description of these fields and combinations
-    // 有关这些字段及其组合的更完整说明，参见函数实现
     
     // OC 对象类型
     BLOCK_FIELD_IS_OBJECT   =  3,  // id, NSObject, __attribute__((NSObject)), block, ...
-    // 为另一个 Block
+    // 为一个 Block 变量
     BLOCK_FIELD_IS_BLOCK    =  7,  // a block variable
     // 为一个被 __block 修饰后生成的结构体
+    // 持有 __block 变量的堆栈结构
     BLOCK_FIELD_IS_BYREF    =  8,  // the on stack structure holding the __block variable
     // 被 __weak 修饰过的弱引用，只在 Block_byref 管理内部对象内存时使用
-    // 也就是 __block __weak id;
+    // 也就是 __block __weak id; 仅使用 __weak 时，还是 BLOCK_FIELD_IS_OBJECT，即如果是对象类型，有没有添加 __weak 修饰都是一样的
     BLOCK_FIELD_IS_WEAK     = 16,  // declared __weak, only used in byref copy helpers
     // 在处理 Block_byref 内部对象内存的时候会加一个额外标记，配合上面的枚举一起使用
     BLOCK_BYREF_CALLER      = 128, // called from __block (byref) copy/dispose support routines.
@@ -353,9 +405,7 @@ enum {
         BLOCK_FIELD_IS_WEAK | BLOCK_BYREF_CALLER
 };
 
-
 // Function pointer accessors
-
 static inline __typeof__(void (*)(void *, ...))
 _Block_get_invoke_fn(struct Block_layout *block)
 {
@@ -367,7 +417,6 @@ _Block_set_invoke_fn(struct Block_layout *block, void (*fn)(void *, ...))
 {
     _Block_set_function_pointer(block->invoke, fn);
 }
-
 
 static inline __typeof__(void (*)(void *, const void *))
 _Block_get_copy_fn(struct Block_descriptor_2 *desc)
@@ -382,7 +431,6 @@ _Block_set_copy_fn(struct Block_descriptor_2 *desc,
     _Block_set_function_pointer(desc->copy, fn);
 }
 
-
 static inline __typeof__(void (*)(const void *))
 _Block_get_dispose_fn(struct Block_descriptor_2 *desc)
 {
@@ -396,11 +444,11 @@ _Block_set_dispose_fn(struct Block_descriptor_2 *desc,
     _Block_set_function_pointer(desc->dispose, fn);
 }
 
-
 // Other support functions
 
-
+// 一组外联函数
 // runtime entry to get total size of a closure
+// 获取 block 完整大小
 BLOCK_EXPORT size_t Block_size(void *aBlock);
 
 // indicates whether block was compiled with compiler that sets the ABI related metadata bits
@@ -408,6 +456,7 @@ BLOCK_EXPORT bool _Block_has_signature(void *aBlock)
     __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_4_3);
 
 // returns TRUE if return value of block is on the stack, FALSE otherwise
+// 栈区 block 返回 TRUE，其他位置返回 FALSE，判断一个 Block 是否位于栈区
 BLOCK_EXPORT bool _Block_use_stret(void *aBlock)
     __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_4_3);
 
@@ -452,16 +501,15 @@ BLOCK_EXPORT void * _NSConcreteWeakBlockVariable[32]
 // BLOCK_EXPORT void * _NSConcreteGlobalBlock[32];
 // BLOCK_EXPORT void * _NSConcreteStackBlock[32];
 
-
 struct Block_callbacks_RR {
-    size_t  size;                   // size == sizeof(struct Block_callbacks_RR)
+    size_t  size; // size == sizeof(struct Block_callbacks_RR)
     void  (*retain)(const void *);
     void  (*release)(const void *);
     void  (*destructInstance)(const void *);
 };
+
 typedef struct Block_callbacks_RR Block_callbacks_RR;
 
 BLOCK_EXPORT void _Block_use_RR2(const Block_callbacks_RR *callbacks);
-
 
 #endif

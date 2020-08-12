@@ -50,28 +50,32 @@ static __inline bool OSAtomicCompareAndSwapInt(int oldi, int newi, int volatile 
 Internal Utilities
 ********************************************************************************/
 
-// 传实参 &aBlock->flags 过来
+// 传实参 &aBlock->flags 过来，
+// 增加 Block 的引用计数
 static int32_t latching_incr_int(volatile int32_t *where) {
     while (1) {
         int32_t old_value = *where;
         // 如果 flags 含有 BLOCK_REFCOUNT_MASK 证明其引用计数达到最大，
         // 直接返回，需要三万多个指针指向，正常情况下不会出现。
+        // BLOCK_REFCOUNT_MASK =     (0xfffe)
+        // 0x1111 1111 1111 1110 // 10 进制 == 65534 // 以 2 为单位，每次递增 2
         if ((old_value & BLOCK_REFCOUNT_MASK) == BLOCK_REFCOUNT_MASK) {
             return BLOCK_REFCOUNT_MASK;
         }
         
         // 做一次原子性判断其值当前是否被其他线程改动，
         // 如果被改动就进入下一次循环直到改动结束后赋值。
-        // OSAtomicCompareAndSwapInt的作用就是在where取值与old_value相同时，
-        // 将old_value+2赋给where。
+        // OSAtomicCompareAndSwapInt 的作用就是在 where 取值与 old_value 相同时，
+        // 将 old_value + 2 赋给 where
         // 注: Block 的引用计数以 flags 的后 16 位代表，
-        // 以 2 为单位，每次递增 2，1 被 BLOCK_DEALLOCATING 正在释放占用。
+        // 以 2 为单位，每次递增 2，1 为 BLOCK_DEALLOCATING，表示正在释放占用。
         if (OSAtomicCompareAndSwapInt(old_value, old_value+2, where)) {
             return old_value+2;
         }
     }
 }
 
+// 是否增加引用计数
 static bool latching_incr_int_not_deallocating(volatile int32_t *where) {
     while (1) {
         int32_t old_value = *where;
@@ -92,6 +96,7 @@ static bool latching_incr_int_not_deallocating(volatile int32_t *where) {
 
 // return should_deallocate?
 // 实参传入 &aBlock->flags
+// 是否减小 block 引用
 static bool latching_decr_int_should_deallocate(volatile int32_t *where) {
     while (1) {
         int32_t old_value = *where;
@@ -130,16 +135,16 @@ Framework callback functions and their default implementations.
 #pragma mark Framework Callback Routines
 #endif
 
-static void _Block_retain_object_default(const void *ptr __unused) { }
+static void _Block_retain_object_default(const void *ptr __unused) { } // block retain 对象时，默认为空
 
-static void _Block_release_object_default(const void *ptr __unused) { }
+static void _Block_release_object_default(const void *ptr __unused) { } // block release 对象时，默认为空
 
-static void _Block_destructInstance_default(const void *aBlock __unused) {}
+static void _Block_destructInstance_default(const void *aBlock __unused) {} // block 废弃对象时，默认为空
+// 因为这些都是由 ARC 自己来处理的，对象的持有/释放/废弃 操作
 
 static void (*_Block_retain_object)(const void *ptr) = _Block_retain_object_default;
 static void (*_Block_release_object)(const void *ptr) = _Block_release_object_default;
 static void (*_Block_destructInstance) (const void *aBlock) = _Block_destructInstance_default;
-
 
 /**************************************************************************
 Callback registration from ObjC runtime and CoreFoundation
@@ -163,33 +168,40 @@ static struct Block_descriptor_1 * _Block_descriptor_1(struct Block_layout *aBlo
 
 static struct Block_descriptor_2 * _Block_descriptor_2(struct Block_layout *aBlock)
 {
-    // 用 BLOCK_HAS_COPY_DISPOSE 来判断是否有 Block_descriptor_2
+    // 根据 BLOCK_HAS_COPY_DISPOSE 来判断是否有 Block_descriptor_2
     if (! (aBlock->flags & BLOCK_HAS_COPY_DISPOSE)) return NULL;
     // 因为有无是编译器确定的，在Block结构体中并无保留，
-    // 所以需要使用 指针相加 的方式来确定其指针位置。有就执行，没有就 return 掉。
-    // 首先找到 descriptor 的位置，向后移动 sizeof(struct Block_descriptor_1)
-    // 的长度，
-    // 强转，看是否时 Block_descriptor_2 类型
+    // 所以需要使用 指针相加 的方式来确定其指针位置。有就执行，没有就 return NULL。
+    // 首先找到 descriptor 的位置，向后移动 sizeof(struct Block_descriptor_1) 的长度，
+    // 强转，看是否是 Block_descriptor_2 类型
     uint8_t *desc = (uint8_t *)aBlock->descriptor;
-    desc += sizeof(struct Block_descriptor_1);
+    desc += sizeof(struct Block_descriptor_1); // 指针移动
+    
     return (struct Block_descriptor_2 *)desc;
 }
 
 static struct Block_descriptor_3 * _Block_descriptor_3(struct Block_layout *aBlock)
 {
+    // 根据 BLOCK_HAS_SIGNATURE 来判断是否有 Block_descriptor_3
+    // 处理完全同上
     if (! (aBlock->flags & BLOCK_HAS_SIGNATURE)) return NULL;
+    
     uint8_t *desc = (uint8_t *)aBlock->descriptor;
     desc += sizeof(struct Block_descriptor_1);
+    
+    // 如果有 Block_descriptor_2,
+    // 则指针移动越过 Block_descriptor_2
     if (aBlock->flags & BLOCK_HAS_COPY_DISPOSE) {
         desc += sizeof(struct Block_descriptor_2);
     }
+    
     return (struct Block_descriptor_3 *)desc;
 }
 
 static void _Block_call_copy_helper(void *result, struct Block_layout *aBlock)
 {
     // 这里如果返回找到了 Block_descriptor_2，就执行它的 copy 函数，
-    // 如果没有找到就直接返回 return
+    // 如果没有找到就直接 return
     // 这个 copy 函数，就是上面的 __main_block_copy_0 函数
     struct Block_descriptor_2 *desc = _Block_descriptor_2(aBlock);
     if (!desc) return;
@@ -201,7 +213,7 @@ static void _Block_call_dispose_helper(struct Block_layout *aBlock)
 {
     // 这里同上面
     // 这里如果返回找到了 Block_descriptor_2，就执行它的 dispose 函数，
-    // 如果没有找到就直接返回 return
+    // 如果没有找到就直接 return
     // 这个 dispose 函数，就是上面的 __main_block_copy_0 函数
     struct Block_descriptor_2 *desc = _Block_descriptor_2(aBlock);
     if (!desc) return;
@@ -218,6 +230,7 @@ Internal Support routines for copying
 #endif
 
 // Copy, or bump refcount, of a block.  If really copying, call the copy helper if present.
+// 复制或增加块的引用计数。如果确实要复制，则调用 copy helper.（如果有）
 void *_Block_copy(const void *arg) {
     // 1. 先声明一个Block_layout结构体类型的指针，如果传入的Block为NULL就直接返回。
     struct Block_layout *aBlock;
@@ -233,27 +246,39 @@ void *_Block_copy(const void *arg) {
     // BLOCK_REFCOUNT_MASK 栈 block
     // BLOCK_NEEDS_FREE 堆 block
     // BLOCK_IS_GLOBAL 全局 block
-    // 3. 如果Block的flags表明该 Block为堆Block时，就对其引用计数递增，然后返回原Block。
+    // 3. 如果 Block 的 flags 表明该 Block 为堆 Block 时，
+    // 就对其引用计数递增，然后返回原 Block。
     if (aBlock->flags & BLOCK_NEEDS_FREE) {
+        // ‼️‼️‼️ 这里表明，堆区 Block 执行 copy 操作，只是增加其引用。如果引用已经最大，则什么都不做。
         // latches on high
         latching_incr_int(&aBlock->flags);
         return aBlock;
     }
     // 4. 如果Block为全局Block就不做其他处理直接返回。
     else if (aBlock->flags & BLOCK_IS_GLOBAL) {
+        // ‼️‼️‼️ 这里表明，如果是全局 Block 执行 copy 操作，则直接返回自身
         return aBlock;
     }
     else {
-        // Its a stack block.  Make a copy.
-        // 5. 该else中就是栈Block了，
-        // 按原Block的内存大小分配一块相同大小的内存，
+        // Its a stack block. Make a copy.
+        // ‼️‼️‼️ 这里表明，如果是栈区 Block 执行 copy 操作，则把栈区 Block 复制到堆区
+        // 5. 该 else 中就是栈 Block了，
+        // 按原 Block 的内存大小分配一块相同大小的内存，
         // 如果失败就返回NULL。
         struct Block_layout *result =
-            (struct Block_layout *)malloc(aBlock->descriptor->size);
+            (struct Block_layout *)malloc(aBlock->descriptor->size); // malloc 在堆区开辟空间
+        
         if (!result) return NULL;
-        // 6. memmove()用于复制位元，将aBlock的所有信息copy到result的位置上。
-        // memmove 函数，如果旧空间和新空间由交集，那么以新空间为主，复制完毕，旧空间会被破坏
+        // 6. memmove() 用于复制位元，将 aBlock 的所有信息 copy 到 result 的位置上。
+        // memmove 函数，如果旧空间和新空间有交集，那么以新空间为主，复制完毕，旧空间会被破坏
+        
+        // 原型：void *memmove(void* dest, const void* src, size_t count );
+        // 头文件：<string.h>
+        // 功能：由 src 所指内存区域复制 count 个字节到 dest 所指内存区域。
+        // 相关函数：memset、memcpy
+        
         memmove(result, aBlock, aBlock->descriptor->size); // bitcopy first
+        
 #if __has_feature(ptrauth_calls)
         // Resign the invoke pointer as it uses address authentication.
         result->invoke = aBlock->invoke;
@@ -267,23 +292,25 @@ void *_Block_copy(const void *arg) {
         // 7. 将新Block的引用计数置零。
         // BLOCK_REFCOUNT_MASK|BLOCK_DEALLOCATING就是0xffff，
         // ~(0xffff)就是0x0000，
-        // result->flags 与0x0000 与等 就将 result->flags 的后16位置零。
-        // 然后将新 Block 标识为堆Block 并将其引用计数置为2。
-        result->flags &= ~(BLOCK_REFCOUNT_MASK|BLOCK_DEALLOCATING);    // XXX not needed
+        // result->flags 与 0x0000 与等 就将 result->flags 的后 16 位置零。
+        // 然后将新 Block 标识为 堆Block 并将其引用计数置为 2。
+        // ｜2 表示把 后 16 位置为 0x0002，表示引用计数为 2
+        result->flags &= ~(BLOCK_REFCOUNT_MASK|BLOCK_DEALLOCATING); // XXX not needed
         result->flags |= BLOCK_NEEDS_FREE | 2;  // logical refcount 1
         
-        // 8. 如果有copy_dispose助手，就执行Block的保存的copy函数，
-        // 就是上面的__main_block_copy_0。
-        // 在_Block_descriptor_2函数中，
-        // 用BLOCK_HAS_COPY_DISPOSE来判断是否有Block_descriptor_2，
-        // 且取Block的Block_descriptor_2时，
-        // 因为有无是编译器确定的，在Block结构体中并无保留，
+        // 8. 如果有copy_dispose助手，就执行 Block 的保存的 copy 函数，
+        // 就是上面的 __main_block_copy_0。
+        // 在 _Block_descriptor_2 函数中，
+        // 用 BLOCK_HAS_COPY_DISPOSE 来判断是否有 Block_descriptor_2，
+        // 且取 Block 的Block_descriptor_2 时，
+        // 因为有无是编译器确定的，在 Block 结构体中并无保留，
         // 所以需要使用指针相加的方式来确定其指针位置。
-        // 有就执行，没有就return掉。
+        // 有就执行，没有就 return 。
         _Block_call_copy_helper(result, aBlock);
         // Set isa last so memory analysis tools see a fully-initialized object.
-        // 9. 将堆Block的isa指针置为_NSConcreteMallocBlock，返回新Block，end。
+        // 9. 将堆 Block 的isa指针置为 _NSConcreteMallocBlock，返回新Block，end。
         // 这里 isa 被修正，我们用 clang 转换时显示为是栈区 Block 是不能确认的
+        // ‼️‼️‼️ 堆区 block
         result->isa = _NSConcreteMallocBlock;
         
         return result;
@@ -298,7 +325,7 @@ void *_Block_copy(const void *arg) {
 // We ask if the byref pointer that we know about has already been copied to the heap, and if so, increment and return it.
 // Otherwise we need to copy it and update the stack forwarding pointer
 static struct Block_byref *_Block_byref_copy(const void *arg) {
-    // 3.1 强转入参为(struct Block_byref *)类型。
+    // 3.1 强制转换入参为(struct Block_byref *)类型。
     struct Block_byref *src = (struct Block_byref *)arg;
 
     // 当入参为栈 byref 时执行此步，
@@ -318,7 +345,7 @@ static struct Block_byref *_Block_byref_copy(const void *arg) {
         
         // 3.4 然后将当前 byref 和 malloc 的 byref 的 forwading 都指向 堆byref，然后操作堆栈都是同一份东西。
         // 这两行特关键：
-        // 正印证那一句，栈区 Block 的 __block 变量的 __forwarding 指向堆中的 __block 变量
+        // ‼️‼️‼️ 正印证那一句，copy 发生后栈区 Block 的 __block 变量的 __forwarding 指向堆中的 __block 变量
         // 堆中的 __block 的 __forwarding 指向自己
         copy->forwarding = copy; // patch heap copy to point to itself
         src->forwarding = copy;  // patch stack to point to heap copy
@@ -329,7 +356,7 @@ static struct Block_byref *_Block_byref_copy(const void *arg) {
         if (src->flags & BLOCK_BYREF_HAS_COPY_DISPOSE) {
             // Trust copy helper to copy everything of interest
             // If more than one field shows up in a byref block this is wrong XXX
-            // 3.6 如果 byref 含有需要内存管理的变量即有 copy_dispose 助手，执行此步。
+            // 3.6 如果 src(入参) byref 含有内存管理的变量即有 copy_dispose 助手，执行此步。
             // 分别取出 src 的 Block_byref_2 和 copy 的 Block_byref_2。
             struct Block_byref_2 *src2 = (struct Block_byref_2 *)(src+1);
             struct Block_byref_2 *copy2 = (struct Block_byref_2 *)(copy+1);
@@ -373,7 +400,7 @@ static void _Block_byref_release(const void *arg) {
     byref = byref->forwarding;
     
     if (byref->flags & BLOCK_BYREF_NEEDS_FREE) {
-        // 1.2 如果该byref在堆上执行此步，如果该byref 还被标记为栈则执行断言。
+        // 1.2 如果该byref在堆上执行此步，如果该 byref 还被标记为栈则执行断言。
         int32_t refcount = byref->flags & BLOCK_REFCOUNT_MASK;
         os_assert(refcount);
         
@@ -384,6 +411,7 @@ static void _Block_byref_release(const void *arg) {
                 struct Block_byref_2 *byref2 = (struct Block_byref_2 *)(byref+1);
                 (*byref2->byref_destroy)(byref);
             }
+            
             // 1.5 释放byref。
             free(byref);
         }
@@ -402,7 +430,6 @@ static void _Block_byref_release(const void *arg) {
 #pragma mark SPI/API
 #endif
 
-
 // API entry point to release a copied Block
 // API 入口点以释放复制的 Block
 void _Block_release(const void *arg) {
@@ -411,15 +438,16 @@ void _Block_release(const void *arg) {
     if (!aBlock) return;
     
     // 2. 如果入参为全局 Block 则返回不做处理。
+    // global block 在程序结束时释放
     if (aBlock->flags & BLOCK_IS_GLOBAL) return;
     
     // 3. 如果入参不为堆Block则返回不做处理。
     if (! (aBlock->flags & BLOCK_NEEDS_FREE)) return;
     
     // 4. 判断aBlock的引用计数是否需要释放内存。
-    // 与copy同样的，latching_decr_int_should_deallocate
+    // 与 copy 同样的，latching_decr_int_should_deallocate
     // 也做了一次循环和原子性判断保证原子性。
-    // 如果该block的引用计数过高(0xfffe)或者过低(0)返回false不做处理。如果其引用计数为2，
+    // 如果该 block 的引用计数过高(0xfffe)或者过低(0)返回 false 不做处理。如果其引用计数为 2，
     // 则将其引用计数 -1 即 BLOCK_DEALLOCATING 标明正在释放，返回 true，
     // 如果大于 2 则将其引用计数 -2 并返回 false。
     if (latching_decr_int_should_deallocate(&aBlock->flags)) {
@@ -430,16 +458,22 @@ void _Block_release(const void *arg) {
         // 6. 默认没做其他操作
         // _Block_destructInstance = callbacks->destructInstance;
         _Block_destructInstance(aBlock);
-        // 7. 释放 aBlock
+        // 7. 释放 aBlock 内存
         free(aBlock);
     }
 }
 
+// 尝试持有
+// 分三种情况
+// 1. 如果是 BLOCK_DEALLOCATING 状态，返回 false
+// 2. 如果是 BLOCK_REFCOUNT_MASK 状态，不做操作，返回 true
+// 3. 其他情况的话，引用增加 2
 bool _Block_tryRetain(const void *arg) {
     struct Block_layout *aBlock = (struct Block_layout *)arg;
     return latching_incr_int_not_deallocating(&aBlock->flags);
 }
 
+// 判断是否正在释放
 bool _Block_isDeallocating(const void *arg) {
     struct Block_layout *aBlock = (struct Block_layout *)arg;
     return (aBlock->flags & BLOCK_DEALLOCATING) != 0;
@@ -560,7 +594,8 @@ void _Block_object_assign(void *destArg, const void *object, const int flags) {
         ********/
         // 1. 当block捕获的变量为 OC 对象时执行此步，
         // ARC 中引用计数由 强指针 来确定，
-        // 所以_Block_retain_object 默认是不做任何操作，只进行简单的指针赋值。
+        // 所以_Block_retain_object 默认是不做任何操作，
+        // 把 object 进行简单的指针赋值给 *dest
         _Block_retain_object(object);
         *dest = object;
         break;
@@ -570,7 +605,7 @@ void _Block_object_assign(void *destArg, const void *object, const int flags) {
         void (^object)(void) = ...;
         [^{ object; } copy];
         ********/
-        // 2. 当 block 捕获的变量为另外一个 block 时执行此步，copy 一个新的 block 并赋值。
+        // 2. 当 block 捕获的变量为另外一个 block 时执行此步，copy 一个新的 block 并赋值给 *dest。
         *dest = _Block_copy(object);
         break;
     
@@ -584,6 +619,7 @@ void _Block_object_assign(void *destArg, const void *object, const int flags) {
          __weak __block ... x;
          [^{ x; } copy];
          ********/
+        // 仅用 __block 修饰的变量和 __block 和 __weak 同时修饰的变量，执行同样的操作
         // 3. 当 block 捕获的变量为 __block 修饰的变量时会执行此步，执行 byref_copy 操作。
         *dest = _Block_byref_copy(object);
         break;
@@ -612,7 +648,7 @@ void _Block_object_assign(void *destArg, const void *object, const int flags) {
          __weak __block void (^object)(void);
          [^{ object; } copy];
          ********/
-        // 5. 同时被 __weak和 __block 修饰的对象或者 block 执行此步，也是直接进行指针赋值。
+        // 5. 同时被 __weak 和 __block 修饰的对象或者 block 执行此步，也是直接进行指针赋值。
         *dest = object;
         break;
 
